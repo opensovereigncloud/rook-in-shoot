@@ -1,0 +1,281 @@
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  cephVersion:
+    image: mtr.devops.telekom.de/osc/onmetal/ceph:v19.2.0
+    allowUnsupported: false
+  dataDirHostPath: /var/lib/rook
+  skipUpgradeChecks: true
+  continueUpgradeAfterChecksEvenIfNotHealthy: false
+  waitTimeoutForHealthyOSDInMinutes: 10
+  mon:
+    count: 3
+    allowMultiplePerNode: false
+    volumeClaimTemplate:
+      spec:
+        storageClassName: default
+        resources:
+          requests:
+            storage: 10Gi
+  mgr:
+    count: 2
+    allowMultiplePerNode: true
+    modules:
+      - name: pg_autoscaler
+        enabled: false
+      - name: nfs
+        enabled: false
+  dashboard:
+    enabled: true
+    ssl: true
+  monitoring:
+    enabled: false
+  network:
+    connections:
+      encryption:
+        enabled: false
+      compression:
+        enabled: false
+    provider: host
+    ipFamily: "IPv4"
+    dualStack: false
+  crashCollector:
+    disable: false
+  cleanupPolicy:
+    confirmation: ""
+    sanitizeDisks:
+      method: quick
+      dataSource: zero
+      iteration: 1
+    allowUninstallWithVolumes: false
+  placement:
+    mon:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: dedicated
+              operator: In
+              values:
+                - rook
+      tolerations:
+      - effect: NoSchedule
+        key: dedicated
+        value: rook
+    mgr:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+         nodeSelectorTerms:
+          - matchExpressions:
+            - key: dedicated
+              operator: In
+              values:
+                - rook
+      tolerations:
+      - effect: NoSchedule
+        key: dedicated
+        value: rook
+      - key: monitor-node
+        operator: Exists
+  annotations:
+  labels:
+  resources:
+    mon:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+    mgr:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+    osd:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+  # The option to automatically remove OSDs that are out and are safe to destroy.
+  removeOSDsIfOutAndSafeToRemove: false
+  priorityClassNames:
+    mgr: system-cluster-critical
+    mon: system-node-critical
+    osd: system-node-critical
+  storage:
+    useAllNodes: false
+    storageClassDeviceSets:
+      - name: az1
+        count: 1
+        portable: true
+        placement:
+          tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              value: rook
+            - key: osd-node
+              operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: topology.kubernetes.io/zone
+                      operator: In
+                      values:
+                        - ffm1-stage
+        preparePlacement:
+          tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              value: rook
+            - key: osd-node
+              operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: topology.kubernetes.io/zone
+                      operator: In
+                      values:
+                        - ffm1-stage
+        volumeClaimTemplates:
+          - metadata:
+              name: ceph-osd-data
+            spec:
+              resources:
+                requests:
+                  storage: 300G
+              storageClassName: default
+              volumeMode: Block
+              accessModes:
+                - ReadWriteOnce
+
+      - name: az2
+        count: 1
+        portable: true
+        placement:
+          tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              value: rook
+            - key: osd-node
+              operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: topology.kubernetes.io/zone
+                      operator: In
+                      values:
+                        - ffm2-stage
+        preparePlacement:
+          tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              value: rook
+            - key: osd-node
+              operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: topology.kubernetes.io/zone
+                      operator: In
+                      values:
+                        - ffm2-stage
+        volumeClaimTemplates:
+          - metadata:
+              name: ceph-osd-data
+            spec:
+              resources:
+                requests:
+                  storage: 300G
+              storageClassName: default
+              volumeMode: Block
+              accessModes:
+                - ReadWriteOnce
+
+      - name: az3
+        count: 1
+        portable: true
+        placement:
+          tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              value: rook
+            - key: osd-node
+              operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: topology.kubernetes.io/zone
+                      operator: In
+                      values:
+                        - ffm3-stage
+        preparePlacement:
+          tolerations:
+            - effect: NoSchedule
+              key: dedicated
+              value: rook
+            - key: osd-node
+              operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: topology.kubernetes.io/zone
+                      operator: In
+                      values:
+                        - ffm3-stage
+        volumeClaimTemplates:
+          - metadata:
+              name: ceph-osd-data
+            spec:
+              resources:
+                requests:
+                  storage: 300G
+              storageClassName: default
+              volumeMode: Block
+              accessModes:
+                - ReadWriteOnce
+    onlyApplyOSDPlacement: false
+  disruptionManagement:
+    managePodBudgets: true
+    osdMaintenanceTimeout: 30
+    pgHealthCheckTimeout: 0
+    manageMachineDisruptionBudgets: false
+    machineDisruptionBudgetNamespace: openshift-machine-api
+  healthCheck:
+    daemonHealth:
+      mon:
+        disabled: false
+        interval: 45s
+      osd:
+        disabled: false
+        interval: 60s
+      status:
+        disabled: false
+        interval: 60s
+    livenessProbe:
+      mon:
+        disabled: false
+      mgr:
+        disabled: false
+      osd:
+        disabled: false
+    startupProbe:
+      mon:
+        disabled: false
+      mgr:
+        disabled: false
+      osd:
+        disabled: false

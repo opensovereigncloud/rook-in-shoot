@@ -1,0 +1,85 @@
+# Patch to modify correct setup for gardenshed
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: rook-ceph-operator-config
+  namespace: rook-ceph
+data:
+  # The logging level for the operator: ERROR | WARNING | INFO | DEBUG
+  ROOK_LOG_LEVEL: "INFO"
+
+  # Disable the CSI driver.
+  ROOK_CSI_ENABLE_CEPHFS: "true"
+
+  # Disable the default version of the CSI RBD driver. To start another version of the CSI driver, see image properties below.
+  ROOK_CSI_ENABLE_RBD: "false"
+
+  # Disable the CSI NFS driver. To start another version of the CSI driver, see image properties below.
+  ROOK_CSI_ENABLE_NFS: "false"
+
+  # Set to true to enable Ceph CSI pvc encryption support.
+  CSI_ENABLE_ENCRYPTION: "false"
+
+  # Set replicas for csi provisioner deployment.
+  CSI_PROVISIONER_REPLICAS: "2"
+
+  # set to false to disable deployment of snapshotter container in CephFS provisioner pod.
+  CSI_ENABLE_CEPHFS_SNAPSHOTTER: "true"
+
+  # set to false to disable deployment of snapshotter container in RBD provisioner pod.
+  CSI_ENABLE_RBD_SNAPSHOTTER: "false"
+
+  # Disable cephfs kernel driver instead of ceph-fuse.
+  CSI_FORCE_CEPHFS_KERNEL_CLIENT: "false"
+
+  # CephCSI provisioner NodeAffinity(applied to both CephFS and RBD provisioner).
+  CSI_PROVISIONER_NODE_AFFINITY: "role=osd-node"
+
+  # (Optional) CephCSI plugin NodeAffinity(applied to both CephFS and RBD plugin).
+  CSI_PLUGIN_NODE_AFFINITY: ""
+
+  CSI_PROVISIONER_TOLERATIONS: |
+    - effect: NoSchedule
+      key: dedicated
+      value: rook
+
+  CSI_CEPHFS_PROVISIONER_TOLERATIONS: |
+    - effect: NoSchedule
+      key: dedicated
+      value: rook
+
+  CSI_CEPHFS_PLUGIN_TOLERATIONS: |
+    - effect: NoSchedule
+      key: dedicated
+      value: rook
+
+  DISCOVER_TOLERATIONS: |
+    - effect: NoSchedule
+      key: dedicated
+      value: rook
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-operator
+  namespace: rook-ceph
+spec:
+  template:
+    spec:
+      tolerations:
+        - effect: NoSchedule
+          key: dedicated
+          value: rook
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: dedicated
+                  operator: In
+                  values:
+                  - "rook"
+      containers:
+        - name: rook-ceph-operator
+          # Recommended resource requests and limits
+          image: mtr.devops.telekom.de/osc/onmetal/rook:v1.15.2
