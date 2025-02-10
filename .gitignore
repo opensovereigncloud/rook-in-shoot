@@ -1,0 +1,4 @@
+deployment/base/config.yaml
+deployment/cluster/config-overrirde.yaml
+deployment/fix.yaml
+deployment/cluster-external/config.yaml

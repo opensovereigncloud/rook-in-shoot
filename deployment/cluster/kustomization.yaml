@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - toolbox.yaml
   - cluster.yaml
+  - svc-mgr.yaml
   - cephfs.yaml
   - cephfs-svg.yaml
   - cephfs-sc.yaml

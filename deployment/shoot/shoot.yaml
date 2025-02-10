@@ -1,0 +1,217 @@
+kind: Shoot
+apiVersion: core.gardener.cloud/v1beta1
+metadata:
+  name: ceph
+  namespace: garden-tsi
+  annotations:
+    alpha.control-plane.shoot.gardener.cloud/high-availability-vpn: 'true'
+    dashboard.garden.sapcloud.io/no-hibernation-schedule: 'true'
+spec:
+  addons:
+    kubernetesDashboard:
+      enabled: false
+      authenticationMode: token
+  cloudProfileName: onmetal
+  dns:
+    domain: ceph.tsi.gmr30.ffm.osc.live
+  extensions:
+    - type: osc-cert-manager-service
+    - type: osc-s3-bucket-service
+    - type: osc-dexclient-service
+    - type: shoot-dns-service
+      providerConfig:
+        apiVersion: service.dns.extensions.gardener.cloud/v1alpha1
+        kind: DNSConfig
+        syncProvidersFromShootSpecDNS: true
+  kubernetes:
+    kubeAPIServer:
+      requests:
+        maxNonMutatingInflight: 400
+        maxMutatingInflight: 200
+      enableAnonymousAuthentication: false
+      eventTTL: 1h0m0s
+      logging:
+        verbosity: 2
+      defaultNotReadyTolerationSeconds: 300
+      defaultUnreachableTolerationSeconds: 300
+    kubeControllerManager:
+      nodeCIDRMaskSize: 24
+      nodeMonitorGracePeriod: 40s
+    kubeScheduler:
+      profile: balanced
+    kubeProxy:
+      mode: IPTables
+      enabled: false
+    kubelet:
+      failSwapOn: true
+      kubeReserved:
+        cpu: 80m
+        memory: 1Gi
+        pid: 20k
+      imageGCHighThresholdPercent: 50
+      imageGCLowThresholdPercent: 40
+      serializeImagePulls: false
+      registryPullQPS: 10
+      registryBurst: 20
+      protectKernelDefaults: true
+      streamingConnectionIdleTimeout: 5m0s
+    version: 1.29.12
+    enableStaticTokenKubeconfig: false
+  networking:
+    type: cilium
+    providerConfig:
+      apiVersion: cilium.networking.extensions.gardener.cloud/v1alpha1
+      bpfSocketLBHostnsOnly:
+        enabled: true
+      kind: NetworkConfig
+      loadBalancingMode: dsr
+      cni:
+        exclusive: false
+      overlay:
+        enabled: false
+      store: kubernetes
+      tunnel: disabled
+    pods: 100.64.0.0/16
+    nodes: 10.10.0.0/25
+    services: 100.65.0.0/16
+    ipFamilies:
+      - IPv4
+  maintenance:
+    autoUpdate:
+      kubernetesVersion: false
+      machineImageVersion: false
+    timeWindow:
+      begin: 150000+0000
+      end: 160000+0000
+  provider:
+    type: onmetal
+    infrastructureConfig:
+      apiVersion: onmetal.provider.extensions.gardener.cloud/v1alpha1
+      kind: InfrastructureConfig
+    workers:
+      - cri:
+          name: containerd
+        labels:
+          dedicated: rook
+          role: osd-node
+        name: rook-az1
+        machine:
+          type: vm-dedicated-4-16
+          image:
+            name: gardenlinux
+            version: 1605.0.5
+          architecture: amd64
+        maximum: 1
+        minimum: 1
+        maxSurge: 1
+        maxUnavailable: 0
+        taints:
+          - key: dedicated
+            value: rook
+            effect: NoSchedule
+        volume:
+          type: fast
+          size: 50Gi
+        zones:
+          - ffm1-stage
+        systemComponents:
+          allow: false
+        machineControllerManager:
+          machineHealthTimeout: 168h0m0s
+          maxEvictRetries: 30
+      - cri:
+          name: containerd
+        labels:
+          dedicated: rook
+          role: osd-node
+        name: rook-az2
+        machine:
+          type: vm-dedicated-4-16
+          image:
+            name: gardenlinux
+            version: 1605.0.5
+          architecture: amd64
+        maximum: 1
+        minimum: 1
+        maxSurge: 1
+        maxUnavailable: 0
+        taints:
+          - key: dedicated
+            value: rook
+            effect: NoSchedule
+        volume:
+          type: fast
+          size: 50Gi
+        zones:
+          - ffm2-stage
+        systemComponents:
+          allow: false
+        machineControllerManager:
+          machineHealthTimeout: 168h0m0s
+          maxEvictRetries: 30
+      - cri:
+          name: containerd
+        labels:
+          dedicated: rook
+          role: osd-node
+        name: rook-az3
+        machine:
+          type: vm-dedicated-4-16
+          image:
+            name: gardenlinux
+            version: 1605.0.5
+          architecture: amd64
+        maximum: 1
+        minimum: 1
+        maxSurge: 1
+        maxUnavailable: 0
+        taints:
+          - key: dedicated
+            value: rook
+            effect: NoSchedule
+        volume:
+          type: fast
+          size: 50Gi
+        zones:
+          - ffm3-stage
+        systemComponents:
+          allow: false
+        machineControllerManager:
+          machineHealthTimeout: 168h0m0s
+          maxEvictRetries: 30
+      - cri:
+          name: containerd
+        name: pool1
+        machine:
+          type: vm-dedicated-2-4
+          image:
+            name: gardenlinux
+            version: 1605.0.5
+          architecture: amd64
+        maximum: 3
+        minimum: 3
+        maxSurge: 1
+        maxUnavailable: 0
+        volume:
+          type: fast
+          size: 50Gi
+        zones:
+          - ffm1-stage
+          - ffm2-stage
+          - ffm3-stage
+        systemComponents:
+          allow: true
+    workersSettings:
+      sshAccess:
+        enabled: true
+  purpose: production
+  region: ffm-stage
+  secretBindingName: smr30-0-creds
+  seedSelector:
+    matchLabels:
+      purpose: dev-smr30-0
+  systemComponents:
+    coreDNS:
+      autoscaling:
+        mode: horizontal
+  schedulerName: default-scheduler

@@ -26,19 +26,18 @@ spec:
     activeCount: 1
     activeStandby: true
     placement:
-      all:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: dedicated
-                    operator: In
-                    values:
-                      - rook
-        tolerations:
-          - effect: NoSchedule
-            key: dedicated
-            value: rook
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: dedicated
+                  operator: In
+                  values:
+                    - rook
+      tolerations:
+        - effect: NoSchedule
+          key: dedicated
+          value: rook
       podAntiAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
           - labelSelector:
@@ -60,8 +59,8 @@ spec:
               topologyKey: topology.kubernetes.io/zone
     resources:
       requests:
-        cpu: "1"
-        memory: "1Gi"
+        cpu: "500m"
+        memory: "512Mi"
       limits:
         cpu: "1"
         memory: "1Gi"

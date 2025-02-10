@@ -40,6 +40,10 @@ spec:
       compression:
         enabled: false
     provider: host
+    internalLoadBalancerService:
+      enabled: true
+      labels:
+        service.beta.kubernetes.io/onmetal-load-balancer-internal: "true"
     ipFamily: "IPv4"
     dualStack: false
   crashCollector:
@@ -52,60 +56,44 @@ spec:
       iteration: 1
     allowUninstallWithVolumes: false
   placement:
-    mon:
+    all:
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
           nodeSelectorTerms:
-          - matchExpressions:
-            - key: dedicated
-              operator: In
-              values:
-                - rook
+            - matchExpressions:
+                - key: dedicated
+                  operator: In
+                  values:
+                    - rook
       tolerations:
       - effect: NoSchedule
         key: dedicated
         value: rook
-    mgr:
-      nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-         nodeSelectorTerms:
-          - matchExpressions:
-            - key: dedicated
-              operator: In
-              values:
-                - rook
-      tolerations:
-      - effect: NoSchedule
-        key: dedicated
-        value: rook
-      - key: monitor-node
-        operator: Exists
   annotations:
   labels:
   resources:
     mon:
       requests:
         cpu: "500m"
-        memory: "1Gi"
+        memory: "512Mi"
       limits:
         cpu: "1"
         memory: "1Gi"
     mgr:
       requests:
         cpu: "500m"
-        memory: "1Gi"
+        memory: "512Mi"
       limits:
         cpu: "1"
         memory: "1Gi"
     osd:
       requests:
-        cpu: "2"
-        memory: "4Gi"
+        cpu: "1"
+        memory: "2Gi"
       limits:
         cpu: "2"
         memory: "4Gi"
-  # The option to automatically remove OSDs that are out and are safe to destroy.
-  removeOSDsIfOutAndSafeToRemove: false
+  removeOSDsIfOutAndSafeToRemove: true
   priorityClassNames:
     mgr: system-cluster-critical
     mon: system-node-critical
@@ -113,136 +101,52 @@ spec:
   storage:
     useAllNodes: false
     storageClassDeviceSets:
-      - name: az1
-        count: 1
+      - name: osc
+        count: 3
         portable: true
+        tuneFastDeviceClass: true
         placement:
-          tolerations:
-            - effect: NoSchedule
-              key: dedicated
-              value: rook
-            - key: osd-node
-              operator: Exists
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
-                      operator: In
-                      values:
-                        - ffm1-stage
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: topology.kubernetes.io/zone
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - rook-ceph-osd
         preparePlacement:
-          tolerations:
-            - effect: NoSchedule
-              key: dedicated
-              value: rook
-            - key: osd-node
-              operator: Exists
-          nodeAffinity:
+          podAntiAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
+              - labelSelector:
+                  matchExpressions:
+                    - key: app
                       operator: In
                       values:
-                        - ffm1-stage
+                        - rook-ceph-osd-prepare
+                topologyKey: topology.kubernetes.io/zone
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: topology.kubernetes.io/zone
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - rook-ceph-osd-prepare
+                  - key: app
+                    operator: In
+                    values:
+                      - rook-ceph-osd
         volumeClaimTemplates:
           - metadata:
               name: ceph-osd-data
             spec:
               resources:
                 requests:
-                  storage: 300G
-              storageClassName: default
-              volumeMode: Block
-              accessModes:
-                - ReadWriteOnce
-
-      - name: az2
-        count: 1
-        portable: true
-        placement:
-          tolerations:
-            - effect: NoSchedule
-              key: dedicated
-              value: rook
-            - key: osd-node
-              operator: Exists
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
-                      operator: In
-                      values:
-                        - ffm2-stage
-        preparePlacement:
-          tolerations:
-            - effect: NoSchedule
-              key: dedicated
-              value: rook
-            - key: osd-node
-              operator: Exists
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
-                      operator: In
-                      values:
-                        - ffm2-stage
-        volumeClaimTemplates:
-          - metadata:
-              name: ceph-osd-data
-            spec:
-              resources:
-                requests:
-                  storage: 300G
-              storageClassName: default
-              volumeMode: Block
-              accessModes:
-                - ReadWriteOnce
-
-      - name: az3
-        count: 1
-        portable: true
-        placement:
-          tolerations:
-            - effect: NoSchedule
-              key: dedicated
-              value: rook
-            - key: osd-node
-              operator: Exists
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
-                      operator: In
-                      values:
-                        - ffm3-stage
-        preparePlacement:
-          tolerations:
-            - effect: NoSchedule
-              key: dedicated
-              value: rook
-            - key: osd-node
-              operator: Exists
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: topology.kubernetes.io/zone
-                      operator: In
-                      values:
-                        - ffm3-stage
-        volumeClaimTemplates:
-          - metadata:
-              name: ceph-osd-data
-            spec:
-              resources:
-                requests:
-                  storage: 300G
+                  storage: 50G
               storageClassName: default
               volumeMode: Block
               accessModes:
@@ -253,7 +157,6 @@ spec:
     osdMaintenanceTimeout: 30
     pgHealthCheckTimeout: 0
     manageMachineDisruptionBudgets: false
-    machineDisruptionBudgetNamespace: openshift-machine-api
   healthCheck:
     daemonHealth:
       mon:
