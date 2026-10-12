@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Ceph cluster for one Shoot only, run by upstream Rook (rook-operator-upstream).
+# It is the cluster of ../cluster without the two things that exist for sharing it:
+# the Ceph daemons use the pod network instead of the host network, and the mons have no
+# load balancers. That removes the only setting that needs the OSC fork.
+resources:
+  - ../cluster
+
+patches:
+  - target:
+      kind: CephCluster
+      name: rook-ceph
+    patch: |-
+      - op: remove
+        path: /spec/network/internalLoadBalancerService
+      - op: remove
+        path: /spec/network/provider
+
+# The toolbox runs the Rook image; take the upstream one here as well. "name" has to be the
+# image that ../cluster/kustomization.yaml sets.
+images:
+  - name: registry.osc.live/osc/iaas/rook
+    newName: docker.io/rook/ceph
+    newTag: v1.21.0

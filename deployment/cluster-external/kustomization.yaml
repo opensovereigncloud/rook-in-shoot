@@ -4,15 +4,17 @@ kind: Kustomization
 # CephCluster in external mode. The upstream examples use the namespace rook-ceph-external;
 # everything lives in rook-ceph here, which is also what the import script defaults to.
 # The namespace and the service accounts of common-external.yaml are therefore not needed:
-# rook-operator-external has created the same ones already.
+# rook-operator-upstream has created the same ones already.
 namespace: rook-ceph
 
 resources:
   - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/cluster-external.yaml
 
 patches:
-  # The provider speaks msgr2 only (port 3300) and encrypts all traffic. With these settings
-  # the consumer mounts CephFS volumes with ms_mode=secure.
+  # The provider speaks msgr2 only (port 3300) and encrypts all traffic; the consumer has to
+  # say the same. The mount options are spelled out, as on the provider: ms_mode=secure for
+  # the encryption, recover_session=clean so that a client that Ceph has evicted reconnects
+  # by itself.
   - target:
       kind: CephCluster
       name: rook-ceph-external
@@ -24,3 +26,8 @@ patches:
             requireMsgr2: true
             encryption:
               enabled: true
+      - op: add
+        path: /spec/csi
+        value:
+          cephfs:
+            kernelMountOptions: ms_mode=secure,recover_session=clean

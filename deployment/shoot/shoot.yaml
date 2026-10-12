@@ -1,4 +1,4 @@
-# Shoot that hosts the Ceph cluster (the "provider").
+# Shoot that runs the Ceph cluster (the "provider", when the cluster is shared with other Shoots).
 # Values are the ones used on the OSC dev landscape; adjust project, region, zones and CIDRs.
 apiVersion: core.gardener.cloud/v1beta1
 kind: Shoot
@@ -22,6 +22,7 @@ spec:
   extensions:
     # Self-service peering of the node networks. Every consumer shoot is listed here,
     # and every consumer shoot lists this shoot in its own peering config.
+    # Leave this extension out for a Ceph cluster that is not shared.
     - type: osc-peering-service
       providerConfig:
         apiVersion: service.peering.extensions.osc.t-systems.com/v1

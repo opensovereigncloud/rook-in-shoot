@@ -18,6 +18,13 @@ spec:
         # AES256K keys can only be used by Linux kernel 7.0 and newer. Keep "aes" until
         # every node that mounts a volume, in this and in all consumer clusters, runs it.
         keyType: aes
+  csi:
+    cephfs:
+      # ms_mode=secure: mount over encrypted msgr2, see network.connections below.
+      # recover_session=clean: a client that Ceph has evicted, for example because its zone
+      # was cut off for more than five minutes, reconnects by itself. Without it the mount
+      # stays dead until all pods that use the volume have left the node.
+      kernelMountOptions: ms_mode=secure,recover_session=clean
   dataDirHostPath: /var/lib/rook
   skipUpgradeChecks: false
   continueUpgradeAfterChecksEvenIfNotHealthy: false

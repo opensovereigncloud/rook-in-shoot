@@ -1,15 +1,15 @@
-# Ceph in a Gardener Shoot, shared with other Shoots
+# Ceph in a Gardener Shoot, for one Shoot or shared with others
 
-This repository deploys a Ceph cluster with [Rook](https://rook.io) into one Gardener Shoot, the
-**provider**, and makes its CephFS filesystem available as a `ReadWriteMany` storage class in other
-Shoots, the **consumers**.
+This repository deploys a Ceph cluster with [Rook](https://rook.io) into a Gardener Shoot and offers
+its CephFS filesystem as a `ReadWriteMany` storage class: to the pods of that Shoot only, or also to
+other Shoots.
 
 > **Disclaimer.** This is a starting point that shows what is possible on Open Sovereign Cloud (OSC).
 > OSC gives no support or warranty for this way of running Ceph. Use it at your own risk.
 
 | Component     | Version                                                         |
 |---------------|-----------------------------------------------------------------|
-| Rook          | v1.21.0, on the provider with [one patch](#why-a-patched-rook-operator) |
+| Rook          | v1.21.0; only a shared cluster needs [one patch](#why-a-patched-rook-operator) |
 | Ceph          | v20.2.4 (Tentacle)                                              |
 | Kubernetes    | v1.32 or newer (required by Rook v1.21)                         |
 | Node kernel   | 5.11 or newer (encrypted msgr2); see [key types](#cephx-key-types-and-the-node-kernel) |
@@ -20,7 +20,25 @@ Everything below was run end to end on the OSC dev landscape on 2026-10-12: prov
 The earlier version of this guide, for Rook v1.16 and Ceph v19, is on the `main` branch.
 [What changed](#what-changed-since-the-rook-v116-version) is listed at the end.
 
-## How it works
+## Two ways to use it
+
+|                              | Ceph for one Shoot                 | Ceph shared with other Shoots |
+|------------------------------|------------------------------------|-------------------------------|
+| The filesystem is mounted by | pods of the Shoot that runs Ceph   | pods of that Shoot, the **provider**, and of other Shoots, the **consumers** |
+| Rook                         | upstream v1.21.0, unchanged        | provider: upstream v1.21.0 with [one patch](#why-a-patched-rook-operator); consumers: upstream, unchanged |
+| Network of the Ceph daemons  | pod network                        | host network, with a load balancer for each mon |
+| Reachable from other Shoots  | no                                 | from every peered Shoot |
+| Described in                 | [Ceph for one Shoot](#ceph-for-one-shoot) | [Provider](#provider) and [Consumer](#consumer) |
+
+Take the first one unless other Shoots have to mount the filesystem. It uses nothing from the OSC
+fork of Rook. Decide before the cluster is created: Rook does not support changing the network of a
+running Ceph cluster, so a cluster cannot be turned from one kind into the other.
+
+Both use the same Ceph settings. [Security](#security) and [Operations](#operations) were written
+and tested for the shared cluster; what they say about consumers, peering and load balancers does
+not apply to a cluster for one Shoot.
+
+## How the shared setup works
 
 ```
         provider shoot                                    consumer shoot
@@ -79,12 +97,13 @@ it when the cluster is created; changing it on a running cluster is not supporte
 
 ```
 deployment/
-  shoot/                   Shoot manifest of the provider
-  rook-operator/           provider: Rook operator (OSC image) and CSI settings
-  cluster/                 provider: CephCluster, CephFS, toolbox
-  rook-operator-external/  consumer: Rook operator (upstream image)
-  cluster-external/        consumer: CephCluster in external mode
-  test/                    consumer: three web servers sharing one volume
+  shoot/                   Shoot manifest for the Shoot that runs Ceph
+  rook-operator-upstream/  upstream Rook operator: for one Shoot, and for every consumer
+  cluster-standalone/      for one Shoot: CephCluster, CephFS, toolbox
+  rook-operator/           shared, provider: Rook operator (OSC image) and CSI settings
+  cluster/                 shared, provider: CephCluster, CephFS, toolbox
+  cluster-external/        shared, consumer: CephCluster in external mode
+  test/                    three web servers sharing one volume
 ```
 
 The kustomizations take the Rook manifests straight from GitHub at the pinned version, so there is
@@ -92,17 +111,84 @@ nothing vendored to keep in sync.
 
 ## Prerequisites
 
-* A Gardener project in which you can create the provider Shoot, and admin access to each consumer
-  Shoot.
+* A Gardener project in which you can create the Shoot that runs Ceph. For a shared cluster also
+  admin access to each consumer Shoot.
 * `kubectl`. It contains `kustomize` as `kubectl kustomize`.
 * Kubernetes v1.32 or newer in all Shoots.
-* Node networks that do not overlap between the provider and any consumer. Many Shoots use the
-  landscape default `10.250.0.0/27`. The provider below uses `10.251.0.0/26`.
+* For a shared cluster: node networks that do not overlap between the provider and any consumer.
+  Many Shoots use the landscape default `10.250.0.0/27`. The provider below uses `10.251.0.0/26`.
 
 All commands run from the `deployment` directory. `KUBECONFIG` must point at the cluster named in
-each step: the **garden** cluster, the **provider** Shoot or the **consumer** Shoot.
+each step: the **garden** cluster, the Shoot that runs Ceph (the **provider**, when it is shared)
+or a **consumer** Shoot.
+
+## Ceph for one Shoot
+
+This variant runs upstream Rook v1.21.0 only: its CRDs, its operator image and its manifests.
+
+Create the Shoot from [`shoot/shoot.yaml`](deployment/shoot/shoot.yaml) without the
+`osc-peering-service` extension; [Create the Shoot](#1-create-the-shoot) explains the dedicated
+worker pools. Then, in that Shoot:
+
+```bash
+kubectl kustomize rook-operator-upstream | kubectl apply --server-side -f -   # run it twice
+kubectl kustomize cluster-standalone | kubectl apply --server-side -f -
+```
+
+The first command has to run twice for the reason given under
+[Deploy the Rook operator](#2-deploy-the-rook-operator). `cluster-standalone` is the cluster of
+[`cluster/`](deployment/cluster) without the two settings that exist for sharing it. In the test it
+was `HEALTH_OK` after six minutes:
+
+```console
+$ kubectl -n rook-ceph get deploy rook-ceph-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
+docker.io/rook/ceph:v1.21.0
+
+$ kubectl -n rook-ceph get svc
+NAME                 TYPE        CLUSTER-IP      PORT(S)
+rook-ceph-exporter   ClusterIP   100.32.5.54     9926/TCP
+rook-ceph-mgr        ClusterIP   100.37.22.213   9283/TCP
+rook-ceph-mon-a      ClusterIP   100.35.110.45   3300/TCP
+rook-ceph-mon-b      ClusterIP   100.38.68.126   3300/TCP
+rook-ceph-mon-c      ClusterIP   100.37.236.67   3300/TCP
+```
+
+The storage class `cephfs` is there for the pods of the Shoot. [`test/`](deployment/test) can be
+applied as it is (`kubectl kustomize test | kubectl apply -f -`); its volume was bound and its three
+pods were running after 13 seconds:
+
+```console
+$ kubectl -n cephfs-test exec deploy/web -- grep nginx /proc/mounts
+... ceph rw,relatime,name=csi-cephfs-node.1,secret=<hidden>,ms_mode=secure,acl,mon_addr=100.35.110.45:3300/100.38.68.126:3300/100.37.236.67:3300,recover_session=clean
+```
+
+What is different from the shared cluster:
+
+* **The Ceph daemons use the pod network.** They do not listen on node addresses, and no other
+  Shoot reaches them.
+* **Each mon is addressed through its Service.** That address stays when the mon moves to another
+  node with its volume, which is why this variant needs no load balancer and no patch.
+* **The operator and the CSI provisioner run on the general nodes.** The Ceph daemons still run on
+  the dedicated nodes.
+* **Images.** The operator and the toolbox use `docker.io/rook/ceph:v1.21.0`. The Ceph image is
+  `registry.osc.live/osc/iaas/ceph:v20.2.4`, a copy of the upstream image.
+
+Tested on the OSC dev landscape on 2026-10-12, with encryption on the wire and of the OSD volumes
+as in the shared cluster:
+
+* **Node replacement.** The node of pool `rook-az1` was replaced while a pod wrote to the volume
+  once per second. Mon `c` kept its name and its address and was running on the new node 30
+  seconds after the drain started. The OSD waited six minutes for its volume, as described under
+  [Node replacement](#node-replacement), and Ceph was `HEALTH_OK` seven minutes after the drain
+  started. The writer paused once for 27 seconds.
+* **Removal**, with the commands for the provider under [Removing things](#removing-things) and the
+  directories `cluster-standalone` and `rook-operator-upstream`. Nothing was left behind.
+
+Stopping all VMs at once was only tested with the shared cluster.
 
 ## Provider
+
+This section and [Consumer](#consumer) set up the shared cluster.
 
 ### 1. Create the Shoot
 
@@ -296,7 +382,7 @@ On the **consumer**. This is upstream Rook without any change other than removin
 As on the provider, run the command twice.
 
 ```bash
-kubectl kustomize rook-operator-external | kubectl apply --server-side -f -
+kubectl kustomize rook-operator-upstream | kubectl apply --server-side -f -
 ```
 
 ### 4. Import the connection data
@@ -365,11 +451,13 @@ hello
 hello
 ```
 
-The volume is mounted by the kernel client over msgr2, with encryption (`ms_mode=secure`):
+The volume is mounted by the kernel client over msgr2, with encryption (`ms_mode=secure`) and so
+that it reconnects by itself after Ceph has evicted the client (`recover_session=clean`, see
+[Outages and disaster recovery](#outages-and-disaster-recovery)):
 
 ```console
 $ kubectl -n cephfs-test exec deploy/web -- grep nginx /proc/mounts
-... ceph rw,relatime,name=csi-cephfs-node-test-cephfs,secret=<hidden>,ms_mode=secure,acl,mon_addr=10.251.0.6:3300/10.251.0.7:3300/10.251.0.8:3300
+... ceph rw,relatime,name=csi-cephfs-node-test-cephfs,secret=<hidden>,ms_mode=secure,acl,mon_addr=10.251.0.6:3300/10.251.0.7:3300/10.251.0.8:3300,recover_session=clean
 ```
 
 ## Security
@@ -515,7 +603,7 @@ the provider Shoot. There is no copy anywhere else: this setup contains no mirro
 
 | Event | What happens | Tested |
 |-------|--------------|--------|
-| One Ceph node or one zone is down | Ceph keeps serving. Two mons are a quorum, and every pool accepts writes with two of its three copies or chunks. Erasure coded data has no redundancy left until the zone is back. | as [node replacement](#node-replacement) |
+| One Ceph node or one zone is down | Ceph keeps serving. Two mons are a quorum, and every pool accepts writes with two of its three copies or chunks. Erasure coded data has no redundancy left until the zone is back. Ceph evicts clients that it cannot reach for more than five minutes; their mounts reconnect afterwards. | yes, see below |
 | Two zones are down | The mons have no quorum, so all I/O stops until one of the zones is back. Nothing is lost. | no |
 | All VMs of the provider stop at once and start again | All I/O stops. Ceph is healthy again about four minutes later without any action. | yes, see below |
 | The volumes of two zones are lost | The erasure coded pool, which the storage class uses, is lost: it needs two of its three chunks. The replicated pools keep one copy, and the mon quorum has to be [restored by hand](https://rook.io/docs/rook/v1.21/Troubleshooting/disaster-recovery/). | no |
@@ -543,8 +631,49 @@ ran twice: with a reset (`reboot -f -n` on every node) and with a power off (`po
 * On the consumer, one write hung for a little more than three minutes in each test and then
   completed. No write failed, no pod was restarted, and the data written before was still there.
 
-Not covered by these tests: an outage that lasts longer than a few minutes, VMs that do not come
-back and are all replaced by new ones at once, and a consumer that is down at the same time.
+**One zone cut off for twelve minutes.** On 2026-10-12 all nodes of one zone lost their network
+for twelve minutes during a test of the infrastructure, in the provider and in the consumer at the
+same time. That was one Ceph node with a mon and an OSD, and one node of the consumer.
+
+* Ceph kept serving. The two mons in the other zones kept the quorum, and pods of the consumer in
+  the other zones wrote to the filesystem ten minutes into the outage.
+* Rook did not replace the mon. Its timeout of ten minutes ran out while the mon could not be
+  scheduled anywhere, and Rook started the timeout again. When the zone was back, the mon joined
+  with its name and address within a minute, and all placement groups were clean four minutes
+  after the zone was back.
+* Ceph then reported `RECENT_CRASH` for the mon and the OSD that had been cut off. In the toolbox,
+  `ceph crash ls-new` shows the reports and `ceph crash archive-all` clears the warning.
+* **The mounts on the nodes that had been cut off were dead.** Ceph evicts a client that it has not
+  heard from for five minutes. At that time the volumes were still mounted without
+  `recover_session=clean`: every access returned `Permission denied`, a pod that was started again
+  on such a node stayed in `ContainerCreating`
+  (`lstat .../globalmount: permission denied`), and nothing recovered by itself.
+
+Such a node is repaired by making it release the volume. All pods that use the volume have to
+leave the node at the same time:
+
+```bash
+kubectl cordon <node>
+kubectl -n <namespace> delete pod <the pods on that node that use the volume>
+kubectl get node <node> -o jsonpath='{.status.volumesInUse}'   # repeat until the volume is gone
+kubectl uncordon <node>
+```
+
+**Mounts that reconnect.** Because of this, the manifests now mount all volumes with
+`recover_session=clean`. The test evicted the client of a writing pod by hand
+(`ceph tell mds.cephfs:0 client evict id=<id>`). Without the option, every write failed with
+`Permission denied` from then on. With it, one write failed with `Bad file descriptor`, and five
+seconds after the eviction the writer continued.
+
+The price: what a client had not stored yet when it was evicted is dropped, a file that was open
+for writing returns errors until it is opened again, and file locks are lost. To have such a
+mount stay dead instead, remove the option from `csi.cephfs.kernelMountOptions` in
+[`cluster/cluster.yaml`](deployment/cluster/cluster.yaml) and
+[`cluster-external/kustomization.yaml`](deployment/cluster-external/kustomization.yaml). A volume
+keeps the options it was mounted with until all pods that use it have left the node.
+
+Not covered by these tests: an outage of all zones that lasts longer than a few minutes, and VMs
+that do not come back and are all replaced by new ones at once.
 
 **What to prepare.**
 
@@ -628,10 +757,12 @@ The provider sets `network.connections.requireMsgr2: true`, as the Rook v1.21 ex
 `network.connections.encryption.enabled: true`. The mons then only listen on port 3300, and every
 Ceph daemon only accepts encrypted connections of the Ceph protocol.
 
-A consumer must set the same two fields in its `CephCluster`
-([`cluster-external/kustomization.yaml`](deployment/cluster-external/kustomization.yaml) does), so
-that Rook mounts the volumes with `ms_mode=secure`. Without a `ms_mode` option the kernel client
-uses the old protocol, which port 3300 does not answer.
+A consumer sets the same two fields in its `CephCluster`
+([`cluster-external/kustomization.yaml`](deployment/cluster-external/kustomization.yaml) does).
+Volumes have to be mounted with `ms_mode=secure`: without a `ms_mode` option the kernel client uses
+the old protocol, which port 3300 does not answer. Rook derives that option from the two fields.
+The manifests spell the mount options out instead (`csi.cephfs.kernelMountOptions`), because they
+add `recover_session=clean`, and an explicit value replaces the derived one.
 
 A client cannot opt out of the encryption. In the test, a mount with `ms_mode=crc` failed, and a
 mount with `ms_mode=prefer-crc` worked, because that mode accepts the encryption the daemons ask
@@ -647,7 +778,7 @@ On a consumer:
 kubectl kustomize test | kubectl delete -f -              # and every other volume of the storage class
 kubectl kustomize cluster-external | kubectl delete -f -
 kubectl -n rook-ceph delete clientprofiles.csi.ceph.io,cephconnections.csi.ceph.io --all
-kubectl kustomize rook-operator-external | kubectl delete -f -
+kubectl kustomize rook-operator-upstream | kubectl delete -f -
 kubectl delete storageclass cephfs                        # created by the import script
 ```
 
@@ -675,7 +806,8 @@ remove the consumer from the peering configuration of the provider Shoot.
 
 On the provider, deleting the `CephCluster` destroys all data. Remove all consumers first, and
 every volume that pods on the provider itself have of the storage class `cephfs`. Rook only wipes
-its state from the nodes after an explicit confirmation:
+its state from the nodes after an explicit confirmation. For a cluster that is not shared, the
+directories are `cluster-standalone` and `rook-operator-upstream`:
 
 ```bash
 kubectl -n rook-ceph patch cephcluster rook-ceph --type merge \
@@ -686,12 +818,13 @@ kubectl kustomize rook-operator | kubectl delete -f -
 ```
 
 If the Shoot is to be used again, wait between the second and the third command until the jobs
-`cluster-cleanup-job-...` in the namespace `rook-ceph` have completed. They wipe the state of Rook
-from the nodes.
+`cluster-cleanup-job-...` in the namespace `rook-ceph` have completed (`kubectl -n rook-ceph get
+jobs`). They wipe the state of Rook from the nodes and took less than a minute in the test.
 
-Remove Rook in this way before the provider Shoot is deleted. In the test, deleting a Shoot that
-still contained the Rook operator stopped at the step `Cleaning extended API groups`. It only went
-on after the finalizers of the two remaining `ClientProfile` objects had been removed by hand:
+Remove Rook in this way before the Shoot is deleted; the Shoot was then gone within four minutes.
+In the test, deleting a Shoot that still contained the Rook operator stopped at the step
+`Cleaning extended API groups`. It only went on after the finalizers of the two remaining
+`ClientProfile` objects had been removed by hand:
 
 ```bash
 kubectl -n rook-ceph patch clientprofiles.csi.ceph.io <name> --type merge -p '{"metadata":{"finalizers":null}}'
@@ -720,7 +853,9 @@ crane append --platform linux/amd64 --base docker.io/rook/ceph:v1.21.0 \
   --new_layer layer.tar --new_tag "$IMAGE"
 ```
 
-Then set the image in `rook-operator/kustomization.yaml` and `cluster/kustomization.yaml`.
+Then set the image in `rook-operator/kustomization.yaml` and `cluster/kustomization.yaml`. Only the
+shared cluster uses this image. `cluster-standalone/kustomization.yaml` replaces it by the upstream
+image and has to name the image that `cluster/kustomization.yaml` sets.
 
 ## What changed since the Rook v1.16 version
 
@@ -739,7 +874,9 @@ Then set the image in `rook-operator/kustomization.yaml` and `cluster/kustomizat
   `false`, the Rook default.
 * **Peering is self-service** through the `osc-peering-service` extension. A change request is no
   longer needed.
-* **Consumers run upstream Rook.** The fork is only used where the mons run.
+* **Consumers run upstream Rook.** The fork is only used where the mons of a shared cluster run.
+* **A cluster for one Shoot needs no fork at all.** `cluster-standalone` runs on upstream Rook.
+* **Mounts reconnect by themselves** after Ceph has evicted a client (`recover_session=clean`).
 * **Nothing is vendored.** The CRDs, the toolbox, the external cluster manifest and the import
   script are taken from their source at the pinned version, and the kustomizations only patch them.
   The import script no longer needs a local edit, because it skips RBD when the RBD variables are
