@@ -1,8 +1,20 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Rook operator for a shoot that consumes the Ceph cluster (a consumer).
+# This is stock upstream Rook. The fork is only needed where the mons run.
 resources:
-  - ../rook-operator
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/crds.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/common.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/csi-operator.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/operator.yaml
 
 patches:
-- path: operator-patch.yaml
+  # CephFS only. Block storage comes with the default storage class of the shoot.
+  - patch: |-
+      $patch: delete
+      apiVersion: csi.ceph.io/v1
+      kind: Driver
+      metadata:
+        name: rook-ceph.rbd.csi.ceph.com
+        namespace: rook-ceph

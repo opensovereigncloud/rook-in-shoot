@@ -1,6 +1,23 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# CephCluster in external mode. The upstream examples use the namespace rook-ceph-external;
+# everything lives in rook-ceph here, which is also what the import script defaults to.
+namespace: rook-ceph
+
 resources:
-  - common-external.yaml
-  - cluster-external.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/common-external.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/cluster-external.yaml
+
+patches:
+  # The provider speaks msgr2 only (port 3300). With this setting the consumer mounts
+  # CephFS volumes with ms_mode=prefer-crc instead of the legacy protocol.
+  - target:
+      kind: CephCluster
+      name: rook-ceph-external
+    patch: |-
+      - op: add
+        path: /spec/network
+        value:
+          connections:
+            requireMsgr2: true

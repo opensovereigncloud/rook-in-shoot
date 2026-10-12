@@ -1,4 +1,4 @@
-deployment/base/config.yaml
-deployment/cluster/config-overrirde.yaml
+.idea/
+# connection data of a consumer contains secret keys
+*.env
 deployment/fix.yaml
-deployment/cluster-external/config.yaml

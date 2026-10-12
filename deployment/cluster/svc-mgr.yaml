@@ -21,7 +21,10 @@ spec:
       port: 9283
       protocol: TCP
       targetPort: 9283
+  # only the active mgr serves the dashboard and the metrics
   selector:
-    app.kubernetes.io/name: ceph-mgr
+    app: rook-ceph-mgr
+    mgr_role: active
+    rook_cluster: rook-ceph
   sessionAffinity: None
   type: LoadBalancer

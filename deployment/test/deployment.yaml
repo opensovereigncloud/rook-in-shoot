@@ -6,6 +6,11 @@ metadata:
 spec:
   replicas: 3
   revisionHistoryLimit: 10
+  strategy:
+    rollingUpdate:
+      # one pod per node: a replacement only fits once an old pod is gone
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: nginx
@@ -30,12 +35,12 @@ spec:
           persistentVolumeClaim:
             claimName: base-pvc
       containers:
-        - image: registry.k8s.io/nginx-slim:0.8
+        - image: registry.k8s.io/e2e-test-images/nginx:1.28.0-2
           imagePullPolicy: IfNotPresent
           name: nginx
           ports:
             - containerPort: 80
-              name: web
+              name: http
               protocol: TCP
           resources: {}
           terminationMessagePath: /dev/termination-log

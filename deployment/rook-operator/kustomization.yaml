@@ -1,11 +1,19 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Rook operator for the shoot that hosts the Ceph cluster (the provider).
+# Stock Rook v1.21.0 manifests with the CRDs and the operator image of the OSC fork,
+# which adds network.internalLoadBalancerService to the CephCluster.
 resources:
-  - crds.yaml
-  - https://raw.githubusercontent.com/rook/rook/v1.16.3/deploy/examples/common.yaml
-  - https://raw.githubusercontent.com/rook/rook/v1.16.3/deploy/examples/monitoring/rbac.yaml
-  - https://raw.githubusercontent.com/rook/rook/v1.16.3/deploy/examples/operator.yaml
+  - https://raw.githubusercontent.com/opensovereigncloud/rook/v1.21.0-osc.2/deploy/examples/crds.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/common.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/csi-operator.yaml
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/operator.yaml
+
+images:
+  - name: docker.io/rook/ceph
+    newName: registry.osc.live/osc/iaas/rook
+    newTag: v1.21.0-osc.2
 
 patches:
-- path: operator-patch.yaml
+  - path: operator-patch.yaml

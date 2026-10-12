@@ -5,10 +5,16 @@ metadata:
   namespace: rook-ceph
 spec:
   cephVersion:
-    image: mtr.devops.telekom.de/osc/onmetal/ceph:v19.2.0
+    image: registry.osc.live/osc/iaas/ceph:v20.2.4
     allowUnsupported: false
+  security:
+    cephx:
+      csi:
+        # AES256K keys can only be used by Linux kernel 7.0 and newer. Keep "aes" until
+        # every node that mounts a volume, in this and in all consumer clusters, runs it.
+        keyType: aes
   dataDirHostPath: /var/lib/rook
-  skipUpgradeChecks: true
+  skipUpgradeChecks: false
   continueUpgradeAfterChecksEvenIfNotHealthy: false
   waitTimeoutForHealthyOSDInMinutes: 10
   mon:
@@ -39,6 +45,8 @@ spec:
         enabled: false
       compression:
         enabled: false
+      # msgr2 only (port 3300). Needs Linux kernel 5.11 or newer on every client node.
+      requireMsgr2: true
     provider: host
     internalLoadBalancerService:
       enabled: true
@@ -136,9 +144,6 @@ spec:
                     operator: In
                     values:
                       - rook-ceph-osd-prepare
-                  - key: app
-                    operator: In
-                    values:
                       - rook-ceph-osd
         volumeClaimTemplates:
           - metadata:
@@ -158,6 +163,15 @@ spec:
     pgHealthCheckTimeout: 0
     manageMachineDisruptionBudgets: false
   healthCheck:
+    # Ceph v20 warns about every key that is not AES256K. With "aes" CSI keys these
+    # warnings cannot be resolved, so they are muted. Remove this with the keyType above.
+    muteHealthWarning:
+      AUTH_INSECURE_CLIENT_KEY_TYPE:
+        policy: mute
+      AUTH_INSECURE_KEYS_ALLOWED:
+        policy: mute
+      AUTH_INSECURE_KEYS_CREATABLE:
+        policy: mute
     daemonHealth:
       mon:
         disabled: false

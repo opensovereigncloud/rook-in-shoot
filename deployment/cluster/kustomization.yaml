@@ -2,9 +2,16 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - toolbox.yaml
   - cluster.yaml
   - svc-mgr.yaml
   - cephfs.yaml
   - cephfs-svg.yaml
   - cephfs-sc.yaml
+  # Toolbox based on the operator image: it carries the script that exports the
+  # connection details for consumer clusters.
+  - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/toolbox-operator-image.yaml
+
+images:
+  - name: docker.io/rook/ceph
+    newName: registry.osc.live/osc/iaas/rook
+    newTag: v1.21.0-osc.2
