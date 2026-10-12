@@ -8,6 +8,11 @@ spec:
     image: registry.osc.live/osc/iaas/ceph:v20.2.4
     allowUnsupported: false
   security:
+    # The key of each encrypted OSD volume (see storage below) is a Kubernetes Secret in
+    # this namespace. Rook replaces these keys on this schedule.
+    keyRotation:
+      enabled: true
+      schedule: "@weekly"
     cephx:
       csi:
         # AES256K keys can only be used by Linux kernel 7.0 and newer. Keep "aes" until
@@ -35,14 +40,21 @@ spec:
       - name: nfs
         enabled: false
   dashboard:
-    enabled: true
+    # Off: on the host network the dashboard would answer on the node address of the
+    # active mgr, for every peered Shoot.
+    enabled: false
     ssl: true
   monitoring:
+    # The metrics of Ceph are served either way, by the Services rook-ceph-mgr (9283) and
+    # rook-ceph-exporter (9926). Set this to true once a Prometheus operator runs in this
+    # Shoot: Rook then creates the ServiceMonitors for it.
     enabled: false
   network:
     connections:
+      # Encrypt all traffic between the Ceph daemons and to the clients. A client that
+      # does not offer encryption is refused. Consumers set the same in their CephCluster.
       encryption:
-        enabled: false
+        enabled: true
       compression:
         enabled: false
       # msgr2 only (port 3300). Needs Linux kernel 5.11 or newer on every client node.
@@ -112,6 +124,8 @@ spec:
       - name: osc
         count: 3
         portable: true
+        # dm-crypt on the OSD volumes
+        encrypted: true
         tuneFastDeviceClass: true
         placement:
           topologySpreadConstraints:

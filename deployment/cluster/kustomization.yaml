@@ -3,13 +3,18 @@ kind: Kustomization
 
 resources:
   - cluster.yaml
-  - svc-mgr.yaml
   - cephfs.yaml
   - cephfs-svg.yaml
   - cephfs-sc.yaml
   # Toolbox based on the operator image: it carries the script that exports the
   # connection details for consumer clusters.
   - https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/toolbox-operator-image.yaml
+
+# The toolbox holds the admin key of the cluster. It is deployed stopped; start it with
+# "kubectl scale" when it is needed and stop it again afterwards.
+replicas:
+  - name: rook-ceph-tools-operator-image
+    count: 0
 
 images:
   - name: docker.io/rook/ceph

@@ -12,7 +12,7 @@ Shoots, the **consumers**.
 | Rook          | v1.21.0, on the provider with [one patch](#why-a-patched-rook-operator) |
 | Ceph          | v20.2.4 (Tentacle)                                              |
 | Kubernetes    | v1.32 or newer (required by Rook v1.21)                         |
-| Node kernel   | 5.11 or newer (msgr2); see [key types](#cephx-key-types-and-the-node-kernel) |
+| Node kernel   | 5.11 or newer (encrypted msgr2); see [key types](#cephx-key-types-and-the-node-kernel) |
 
 Everything below was run end to end on the OSC dev landscape on 2026-10-12: provider on Kubernetes
 1.34.8, consumer on 1.32.9, all nodes on Garden Linux 2150.4.0 with kernel 6.18.
@@ -43,7 +43,8 @@ The earlier version of this guide, for Rook v1.16 and Ceph v19, is on the `main`
   load balancer with an internal address and advertises that address instead.
 * **Consumers run unmodified Rook.** They connect in Rook's
   [external cluster](https://rook.io/docs/rook/v1.21/CRDs/Cluster/external-cluster/external-cluster/)
-  mode. Each consumer gets its own Ceph users, restricted to the filesystem.
+  mode. Each consumer gets its own Ceph users, but the consumers are not isolated from each other;
+  see [Security](#security).
 
 ### Why a patched Rook operator
 
@@ -80,7 +81,7 @@ it when the cluster is created; changing it on a running cluster is not supporte
 deployment/
   shoot/                   Shoot manifest of the provider
   rook-operator/           provider: Rook operator (OSC image) and CSI settings
-  cluster/                 provider: CephCluster, CephFS, toolbox, mgr load balancer
+  cluster/                 provider: CephCluster, CephFS, toolbox
   rook-operator-external/  consumer: Rook operator (upstream image)
   cluster-external/        consumer: CephCluster in external mode
   test/                    consumer: three web servers sharing one volume
@@ -171,14 +172,15 @@ kubectl kustomize cluster | kubectl apply --server-side -f -
 This creates
 
 * the `CephCluster` with three mons and one OSD per zone, both on volumes of the default storage
-  class, and two mgrs,
+  class, and two mgrs. The OSD volumes and all Ceph traffic are encrypted; see
+  [Security](#security),
 * the filesystem `cephfs` with a replicated and an erasure coded data pool, the subvolume group
   `csi`, and the storage class `cephfs` for pods on the provider itself,
-* the load balancer `external-mgr`, which gives the dashboard and the metrics endpoint of the active
-  mgr a stable address,
 * a toolbox that contains the script for [exporting the connection data](#2-export-the-connection-data).
+  It is deployed without a replica and only started when it is needed. While it runs, applying this
+  kustomization again reports a conflict for its replica count; stop it first.
 
-After about four minutes:
+After about five minutes:
 
 ```console
 $ kubectl -n rook-ceph get cephcluster,cephfilesystem
@@ -189,21 +191,20 @@ NAME                                 ACTIVEMDS   PHASE
 cephfilesystem.ceph.rook.io/cephfs   1           Ready
 
 $ kubectl -n rook-ceph get svc
-NAME              TYPE           EXTERNAL-IP   PORT(S)
-external-mgr      LoadBalancer   10.251.0.6    8443/TCP,9283/TCP
-rook-ceph-mon-a   LoadBalancer   10.251.0.7    3300:30238/TCP
-rook-ceph-mon-b   LoadBalancer   10.251.0.8    3300:31364/TCP
-rook-ceph-mon-c   LoadBalancer   10.251.0.9    3300:30150/TCP
+NAME                 TYPE           EXTERNAL-IP   PORT(S)
+rook-ceph-exporter   ClusterIP      <none>        9926/TCP
+rook-ceph-mgr        ClusterIP      <none>        9283/TCP
+rook-ceph-mon-a      LoadBalancer   10.251.0.6    3300:31602/TCP
+rook-ceph-mon-b      LoadBalancer   10.251.0.7    3300:30205/TCP
+rook-ceph-mon-c      LoadBalancer   10.251.0.8    3300:31779/TCP
 ```
 
-The mons are registered in Ceph with the load balancer addresses, not with the node addresses
-(`10.251.0.1`, `.2` and `.4` in this run):
+The mons are registered with the load balancer addresses, not with the node addresses
+(`10.251.0.2`, `.3` and `.4` in this run):
 
 ```console
-$ kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- ceph mon dump
-0: v2:10.251.0.7:3300/0 mon.a
-1: v2:10.251.0.8:3300/0 mon.b
-2: v2:10.251.0.9:3300/0 mon.c
+$ kubectl -n rook-ceph get cm rook-ceph-mon-endpoints -o jsonpath='{.data.data}'
+a=10.251.0.6:3300,b=10.251.0.7:3300,c=10.251.0.8:3300
 ```
 
 ## Consumer
@@ -237,15 +238,24 @@ from the previous step:
 
 ```bash
 kubectl run peer-probe --rm -it --restart=Never \
-  --image=registry.k8s.io/e2e-test-images/busybox:1.36.1-1 -- nc -z -w 3 10.251.0.7 3300 && echo open
+  --image=registry.k8s.io/e2e-test-images/busybox:1.36.1-1 -- nc -z -w 3 10.251.0.6 3300 && echo open
 ```
+
+If the provider Shoot was deleted and created again, a consumer that still lists it does not get
+the connection back by reconciling. Remove the entry from the consumer Shoot, wait for the
+reconciliation, and add it again.
 
 ### 2. Export the connection data
 
 On the **provider**, run Rook's export script in the toolbox. It creates Ceph users for this
-consumer and prints their keys together with the cluster id and a mon address.
+consumer and prints their keys together with the cluster id and a mon address. The toolbox holds
+the admin key of the cluster, so it only runs for as long as it is needed.
 
 ```bash
+kubectl -n rook-ceph scale deploy rook-ceph-tools-operator-image --replicas=1
+kubectl -n rook-ceph rollout status deploy rook-ceph-tools-operator-image
+
+install -m 600 /dev/null consumer.env   # will hold secret keys: readable by the owner only
 kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- \
   python3 /etc/rook-external/create-external-cluster-resources.py \
     --namespace rook-ceph \
@@ -257,10 +267,14 @@ kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- \
     --rbd-data-pool-name .mgr \
     --alias-rbd-data-pool-name data \
     --cephx-key-type aes \
+    --skip-monitoring-endpoint \
   | sed -n '/^export /,$p' > consumer.env
 
-# address of the active mgr, for the dashboard link and the metrics endpoint
-MGR_IP=$(kubectl -n rook-ceph get svc external-mgr -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+# no block storage is shared: remove the two RBD users the script has created anyway
+kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- ceph auth rm client.csi-rbd-node-test-data
+kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- ceph auth rm client.csi-rbd-provisioner-test-data
+
+kubectl -n rook-ceph scale deploy rook-ceph-tools-operator-image --replicas=0
 ```
 
 * `--k8s-cluster-name` is a name for this consumer. Together with `--restricted-auth-permission` it
@@ -268,7 +282,10 @@ MGR_IP=$(kubectl -n rook-ceph get svc external-mgr -o jsonpath='{.status.loadBal
 * `--cephx-key-type aes` is required while nodes run a kernel older than 7.0. See
   [key types](#cephx-key-types-and-the-node-kernel).
 * `--rbd-data-pool-name` is mandatory for restricted users even though no block storage is shared.
-  `.mgr` stands in, and the RBD values are dropped again before the import.
+  `.mgr` stands in. The RBD users are removed right away and the RBD values are dropped before the
+  import. Their names end in the consumer name and the alias, here `test-data`.
+* `--skip-monitoring-endpoint` leaves out the address of the metrics endpoint, which the import
+  does not use.
 * The `sed` cuts off two informational lines that the script prints before the variables.
 
 `consumer.env` contains secret keys. Keep it out of version control and delete it after the import.
@@ -284,7 +301,7 @@ kubectl kustomize rook-operator-external | kubectl apply --server-side -f -
 
 ### 4. Import the connection data
 
-Still on the **consumer**, in the same shell that knows `MGR_IP`:
+Still on the **consumer**:
 
 ```bash
 source consumer.env
@@ -292,10 +309,6 @@ source consumer.env
 # no block storage: drop the RBD values so the import script skips them
 unset CSI_RBD_NODE_SECRET CSI_RBD_NODE_SECRET_NAME \
       CSI_RBD_PROVISIONER_SECRET CSI_RBD_PROVISIONER_SECRET_NAME RBD_POOL_NAME
-
-# the script reports the node address of the active mgr; use the load balancer instead
-export MONITORING_ENDPOINT=$MGR_IP
-export ROOK_EXTERNAL_DASHBOARD_LINK=https://$MGR_IP:8443/
 
 curl -fsSLO https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/import-external-cluster.sh
 bash import-external-cluster.sh
@@ -324,8 +337,14 @@ NAME                 PHASE       MESSAGE                          HEALTH      EX
 rook-ceph-external   Connected   Cluster connected successfully   HEALTH_OK   true
 
 $ kubectl -n rook-ceph get cm rook-ceph-mon-endpoints -o jsonpath='{.data.data}'
-b=10.251.0.8:3300,c=10.251.0.9:3300,a=10.251.0.7:3300
+a=10.251.0.6:3300,b=10.251.0.7:3300,c=10.251.0.8:3300
 ```
+
+The CSI driver receives the connection data a little later than that. In both test runs a volume
+that was requested within the first minute stayed `Pending` with the event
+`open /etc/ceph-csi-config/config.json: no such file or directory`. Nothing has to be done about
+it: the volume was created eight and a half minutes later, when the provisioner tried again. Waiting
+a few minutes before the first volume is requested avoids the delay.
 
 ### 6. Test
 
@@ -334,8 +353,9 @@ kubectl kustomize test | kubectl apply -f -
 ```
 
 This starts three web servers on three different nodes that share one `ReadWriteMany` volume of
-the storage class `cephfs`, behind an internal load balancer. Write a file through one pod and read
-it through the others:
+the storage class `cephfs`, behind an internal load balancer. It is a test only: the web servers
+publish everything on the volume over plain HTTP. Write a file through one pod and read it through
+the others:
 
 ```console
 $ echo "hello" | kubectl -n cephfs-test exec -i deploy/web -- tee /usr/share/nginx/html/index.html
@@ -345,12 +365,67 @@ hello
 hello
 ```
 
-The volume is mounted by the kernel client over msgr2:
+The volume is mounted by the kernel client over msgr2, with encryption (`ms_mode=secure`):
 
 ```console
 $ kubectl -n cephfs-test exec deploy/web -- grep nginx /proc/mounts
-... ceph rw,relatime,name=csi-cephfs-node-test-cephfs,secret=<hidden>,ms_mode=prefer-crc,acl,mon_addr=10.251.0.7:3300/10.251.0.8:3300/10.251.0.9:3300
+... ceph rw,relatime,name=csi-cephfs-node-test-cephfs,secret=<hidden>,ms_mode=secure,acl,mon_addr=10.251.0.6:3300/10.251.0.7:3300/10.251.0.8:3300
 ```
+
+## Security
+
+### Who is trusted
+
+The provider and all consumers form **one trust domain**. An admin of one consumer Shoot can read
+the data of every other consumer:
+
+* Every consumer holds the key of the Ceph user `client.healthchecker`, which Rook uses to watch the
+  cluster. All consumers share this user, and it may read every object in every pool.
+* The CSI users of a consumer are limited to the filesystem, not to the volumes of that consumer.
+* The Ceph daemons run on the host network. Every peered Shoot reaches every Ceph port on the node
+  addresses of the provider, and network policies do not apply there. What keeps others out is the
+  peering, which both Shoots have to configure, and the CephX authentication of Ceph.
+
+Do not share the filesystem with a Shoot whose admins must not see the data of the others. Such a
+tenant needs a provider of its own.
+
+### What is set
+
+| Area          | Setting in [`cluster/`](deployment/cluster)                          | Effect |
+|---------------|----------------------------------------------------------------------|--------|
+| On the wire   | `network.connections.encryption.enabled: true`, `requireMsgr2: true` | All traffic of the Ceph protocol, between the daemons and to the clients, is encrypted, also between the Shoots. |
+| On the volume | `encrypted: true` on the OSD volumes, `security.keyRotation`         | The OSD volumes are encrypted with dm-crypt. Rook replaces the keys once a week. |
+| Admin access  | toolbox deployed with no replica                                     | The toolbox, a pod with a shell and the admin key of the cluster, only runs while it is needed. |
+| Dashboard     | `dashboard.enabled: false`                                           | No admin login is offered on the network. |
+
+These settings were tested on a cluster that was created with them. On a cluster that was created
+from an earlier version of this guide, applying them is not enough:
+
+* existing OSDs keep their unencrypted volume until Rook
+  [migrates them](https://rook.io/docs/rook/v1.21/Storage-Configuration/Advanced/ceph-osd-mgmt/#osd-migration),
+  which was not tested here,
+* the load balancer of the mgr stays until it is deleted:
+  `kubectl -n rook-ceph delete service external-mgr`.
+
+### What is not covered
+
+* **The keys of the OSD volumes are Secrets** in the namespace `rook-ceph` of the provider. The
+  encryption protects a volume that gets into other hands outside of the Shoot. It does not protect
+  against someone with access to the provider Shoot. Rook can keep the keys in a
+  [key management system](https://rook.io/docs/rook/v1.21/Storage-Configuration/Advanced/key-management-system/)
+  instead.
+* **The volumes of the mons are not encrypted.** They contain the CephX keys of the cluster.
+* **CephX keys for mounting are of the older type `aes`**; see
+  [key types](#cephx-key-types-and-the-node-kernel). The weekly rotation only concerns the keys of
+  the OSD volumes. CephX keys stay the same until they are
+  [rotated](https://rook.io/docs/rook/v1.21/Storage-Configuration/Advanced/cephx-key-rotation/).
+* **The metrics of Ceph are served without authentication and without encryption** on the node
+  addresses: port 9283 on the active mgr and port 9926 on every Ceph node. They contain names and
+  statistics, no stored data, and every peered Shoot can read them. They stay on for
+  [monitoring](#monitoring). `monitoring.metricsDisabled: true` in `cluster.yaml` switches them
+  off; on the running test cluster this closed port 9283, while the exporter pods kept running.
+* **The dashboard, once enabled, answers on the node address of the active mgr**, port 8443, for
+  every peered Shoot. Its admin password is the Secret `rook-ceph-dashboard-password`.
 
 ## Operations
 
@@ -370,7 +445,7 @@ operator. Gardener added the new node first and then drained the old one.
 | 0:43                         | mon `a` starting on the new node, quorum is `b`, `c`              |
 | 1:02                         | mon `a` back in quorum, `HEALTH_OK`, all placement groups clean  |
 
-* Mon `a` kept its name and its address `10.251.0.7`. Rook did not fail over to a new mon.
+* Mon `a` kept its name and its address. Rook did not fail over to a new mon.
 * The consumer stayed `Connected` and its list of mons did not change.
 * The writer on the consumer paused once for 11 seconds, when the daemons on the drained node
   stopped. Every other write completed within 2 seconds.
@@ -416,11 +491,109 @@ out of quorum. This happened to one mon in the test with three nodes and is fixe
 mon that had already moved twice was kept out of quorum for two minutes, and then its node was
 replaced two more times. It came back with the same name and address every time.
 
+**With encryption.** The tests above ran before the encryption of the traffic and of the OSD volumes
+was switched on. With both in place, the node of pool `rook-az1` was replaced twice more. Both
+times mon `a` kept its name and address and was running on the new node within a minute, and the
+OSD opened its encrypted volume there. The first time Ceph was `HEALTH_OK` about two minutes after
+the drain started and the writer paused once for 18 seconds. The second time the OSD again waited
+six minutes for its volume, Ceph was `HEALTH_OK` after seven and a half minutes, and the writer
+paused once for 10 seconds.
+
 **Recommendation.** Roll the dedicated pools one after the other: change one pool, wait for
 `HEALTH_OK`, then change the next. With one node at a time Ceph was healthy again after one to
-seven minutes and the consumer paused for at most 16 seconds. With several nodes at once the
+eight minutes and the consumer paused for at most 18 seconds. With several nodes at once the
 consumer paused for up to 42 seconds, the data was stored on two OSDs for more than ten minutes, and
 Gardener reported a failed reconciliation in between.
+
+### Outages and disaster recovery
+
+This section takes the view of the owner of the Shoots. The control planes of the Shoots,
+including their etcd and its backup, are run by the platform and are not covered here.
+
+**All data is in one region.** Every pool keeps its three copies or chunks in the three zones of
+the provider Shoot. There is no copy anywhere else: this setup contains no mirroring and no backup.
+
+| Event | What happens | Tested |
+|-------|--------------|--------|
+| One Ceph node or one zone is down | Ceph keeps serving. Two mons are a quorum, and every pool accepts writes with two of its three copies or chunks. Erasure coded data has no redundancy left until the zone is back. | as [node replacement](#node-replacement) |
+| Two zones are down | The mons have no quorum, so all I/O stops until one of the zones is back. Nothing is lost. | no |
+| All VMs of the provider stop at once and start again | All I/O stops. Ceph is healthy again about four minutes later without any action. | yes, see below |
+| The volumes of two zones are lost | The erasure coded pool, which the storage class uses, is lost: it needs two of its three chunks. The replicated pools keep one copy, and the mon quorum has to be [restored by hand](https://rook.io/docs/rook/v1.21/Troubleshooting/disaster-recovery/). | no |
+| The volumes of all zones are lost, or the provider Shoot, the `CephCluster` or the volume claims of the mons and OSDs are deleted | All data is lost. The volumes come from the default storage class of the Shoot, which had the reclaim policy `Delete` on the test landscape. | no |
+
+**Test: all VMs down at the same time.** All six VMs of the provider were stopped in the same
+second, without a shutdown and without writing their caches to disk. Meanwhile a pod on the consumer
+wrote to the shared volume once per second and waited each time until the data was stored. The test
+ran twice: with a reset (`reboot -f -n` on every node) and with a power off (`poweroff -f -n`).
+
+| Time after the stop              | Reset | Power off |
+|----------------------------------|-------|-----------|
+| all six nodes `Ready` again      | 1:57  | 2:13      |
+| all three mons running           | 3:02  | 3:02      |
+| writer on the consumer continues | 3:07  | 3:08      |
+| all three OSDs running           | 3:18  | 3:18      |
+| `HEALTH_OK`                      | 3:47  | 3:58      |
+
+* After the power off, the infrastructure started the VMs again by itself. The nodes kept their
+  names and addresses.
+* The mons kept their names and addresses. After the reset, two of them started on another node
+  than before.
+* The encrypted OSD volumes were opened again without any action, and all placement groups were
+  clean.
+* On the consumer, one write hung for a little more than three minutes in each test and then
+  completed. No write failed, no pod was restarted, and the data written before was still there.
+
+Not covered by these tests: an outage that lasts longer than a few minutes, VMs that do not come
+back and are all replaced by new ones at once, and a consumer that is down at the same time.
+
+**What to prepare.**
+
+* Back up the data that matters, from within the consumers, to a place outside of the region.
+  Nothing in this repository does that.
+* Keep the `deployment` directory with your changes in version control. It is all that is needed to
+  build the provider again.
+* An encrypted OSD volume cannot be opened without its Secret
+  `rook-ceph-osd-encryption-key-<claim>` in the namespace `rook-ceph` of the provider.
+
+**Building the provider again after a total loss.** Create it as described under
+[Provider](#provider). It is a new Ceph cluster with a new id and new keys, so every consumer has to
+be connected again:
+
+1. Remove the old connection from the consumer, see [Removing things](#removing-things).
+2. Remove the peering entry for the provider from the consumer Shoot and add it again.
+3. Export, import and connect as described under [Consumer](#consumer).
+4. Restore the data from the backup.
+
+This was run once, with a provider Shoot that was deleted and created again and a consumer whose
+volumes had been removed before. A consumer that still has volumes of the lost cluster was not
+tested; Rook cannot delete such volumes any more.
+
+### Monitoring
+
+Ceph serves its metrics for Prometheus through two Services in the namespace `rook-ceph` of the
+provider:
+
+| Service              | Port | Content                                                      |
+|----------------------|------|--------------------------------------------------------------|
+| `rook-ceph-mgr`      | 9283 | state of the cluster, the pools, the OSDs and the mons        |
+| `rook-ceph-exporter` | 9926 | performance counters of the daemons, one exporter per Ceph node |
+
+```console
+$ kubectl run metrics --rm -i --restart=Never --quiet \
+    --image=registry.k8s.io/e2e-test-images/busybox:1.36.1-1 -- \
+    wget -q -O - http://rook-ceph-mgr.rook-ceph:9283/metrics | grep -E '^ceph_(health_status|osd_up)'
+ceph_health_status 0.0
+ceph_osd_up{ceph_daemon="osd.0"} 1.0
+ceph_osd_up{ceph_daemon="osd.1"} 1.0
+ceph_osd_up{ceph_daemon="osd.2"} 1.0
+```
+
+A Prometheus and Grafana stack in the provider Shoot can collect them and alert on them. Once a
+Prometheus operator is installed, `monitoring.enabled: true` in
+[`cluster/cluster.yaml`](deployment/cluster/cluster.yaml) makes Rook create the `ServiceMonitor`
+resources for it. Rook also provides alert rules and dashboards; see its
+[monitoring guide](https://rook.io/docs/rook/v1.21/Storage-Configuration/Monitoring/ceph-monitoring/).
+Reading the metrics was tested as shown above. Installing a monitoring stack was not.
 
 ### CephX key types and the node kernel
 
@@ -449,13 +622,20 @@ If a consumer was exported without `--cephx-key-type aes`, remove its users on t
 (`ceph auth rm client.csi-cephfs-node-<name>-cephfs` and so on) and the imported secrets on the
 consumer, then export and import again. The export script does not change keys that already exist.
 
-### msgr2
+### msgr2 and encryption on the wire
 
-The provider sets `network.connections.requireMsgr2: true`, as the Rook v1.21 examples do. The mons
-then only listen on port 3300. A consumer must set the same field in its `CephCluster`
+The provider sets `network.connections.requireMsgr2: true`, as the Rook v1.21 examples do, and
+`network.connections.encryption.enabled: true`. The mons then only listen on port 3300, and every
+Ceph daemon only accepts encrypted connections of the Ceph protocol.
+
+A consumer must set the same two fields in its `CephCluster`
 ([`cluster-external/kustomization.yaml`](deployment/cluster-external/kustomization.yaml) does), so
-that Rook mounts the volumes with `ms_mode=prefer-crc`. The kernel client needs that option to
-speak msgr2; without it, it uses the old protocol, which port 3300 does not answer.
+that Rook mounts the volumes with `ms_mode=secure`. Without a `ms_mode` option the kernel client
+uses the old protocol, which port 3300 does not answer.
+
+A client cannot opt out of the encryption. In the test, a mount with `ms_mode=crc` failed, and a
+mount with `ms_mode=prefer-crc` worked, because that mode accepts the encryption the daemons ask
+for.
 
 ### Removing things
 
@@ -466,21 +646,59 @@ On a consumer:
 ```bash
 kubectl kustomize test | kubectl delete -f -              # and every other volume of the storage class
 kubectl kustomize cluster-external | kubectl delete -f -
+kubectl -n rook-ceph delete clientprofiles.csi.ceph.io,cephconnections.csi.ceph.io --all
 kubectl kustomize rook-operator-external | kubectl delete -f -
+kubectl delete storageclass cephfs                        # created by the import script
 ```
 
-The `CephCluster` is only removed once no volume of the storage class exists any more. Until then
-the ConfigMap `rook-ceph-mon-endpoints` stays as well; it carries a finalizer of Rook. Do not delete
-the imported secrets while volumes exist, because deleting a volume needs them.
+* The `CephCluster` is only removed once no volume of the storage class exists any more. Until then
+  the ConfigMap `rook-ceph-mon-endpoints` stays as well; it carries a finalizer of Rook. Do not
+  delete the imported secrets while volumes exist, because deleting a volume needs them.
+* The third command has to run while the operator still exists. The CSI operator releases these
+  objects. When it is removed first, they stay behind and keep the namespace `rook-ceph` in the
+  state `Terminating`.
+* Removing the operator ends with a few `NotFound` errors, for objects that have already gone
+  together with their namespace or their resource definition. They can be ignored.
 
-On the provider, deleting the `CephCluster` destroys all data. Rook only wipes its state from the
-nodes after an explicit confirmation:
+Then take the access away on the **provider**:
+
+```bash
+kubectl -n rook-ceph scale deploy rook-ceph-tools-operator-image --replicas=1
+kubectl -n rook-ceph rollout status deploy rook-ceph-tools-operator-image
+kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- ceph auth rm client.csi-cephfs-node-test-cephfs
+kubectl -n rook-ceph exec deploy/rook-ceph-tools-operator-image -- ceph auth rm client.csi-cephfs-provisioner-test-cephfs
+kubectl -n rook-ceph scale deploy rook-ceph-tools-operator-image --replicas=0
+```
+
+`client.healthchecker` is shared by all consumers and stays until the last one is gone. Finally
+remove the consumer from the peering configuration of the provider Shoot.
+
+On the provider, deleting the `CephCluster` destroys all data. Remove all consumers first, and
+every volume that pods on the provider itself have of the storage class `cephfs`. Rook only wipes
+its state from the nodes after an explicit confirmation:
 
 ```bash
 kubectl -n rook-ceph patch cephcluster rook-ceph --type merge \
   -p '{"spec":{"cleanupPolicy":{"confirmation":"yes-really-destroy-data"}}}'
 kubectl kustomize cluster | kubectl delete -f -
+kubectl -n rook-ceph delete clientprofiles.csi.ceph.io,cephconnections.csi.ceph.io --all
+kubectl kustomize rook-operator | kubectl delete -f -
 ```
+
+If the Shoot is to be used again, wait between the second and the third command until the jobs
+`cluster-cleanup-job-...` in the namespace `rook-ceph` have completed. They wipe the state of Rook
+from the nodes.
+
+Remove Rook in this way before the provider Shoot is deleted. In the test, deleting a Shoot that
+still contained the Rook operator stopped at the step `Cleaning extended API groups`. It only went
+on after the finalizers of the two remaining `ClientProfile` objects had been removed by hand:
+
+```bash
+kubectl -n rook-ceph patch clientprofiles.csi.ceph.io <name> --type merge -p '{"metadata":{"finalizers":null}}'
+```
+
+Deleting the provider Shoot destroys the data in any case: the volumes of the mons and the OSDs are
+deleted together with the Shoot.
 
 ## Building the operator image
 
@@ -513,17 +731,21 @@ Then set the image in `rook-operator/kustomization.yaml` and `cluster/kustomizat
 * **Kubernetes v1.32 or newer** is required.
 * **CSI settings moved** from the operator ConfigMap to the resources of the ceph-csi-operator.
 * **Kernel client instead of ceph-fuse**, over msgr2.
+* **Encryption** of all Ceph traffic and of the OSD volumes. The dashboard is switched off, the
+  load balancer of the mgr is gone, and the toolbox only runs when it is needed; see
+  [Security](#security).
 * **CephX key type** has to be set to `aes`; see above.
 * **Ceph upgrades check the cluster health again.** `skipUpgradeChecks` was `true` and is now
   `false`, the Rook default.
 * **Peering is self-service** through the `osc-peering-service` extension. A change request is no
   longer needed.
 * **Consumers run upstream Rook.** The fork is only used where the mons run.
-* **Nothing is vendored.** The CRDs, the toolbox, the external cluster manifests and the import
-  script are used unchanged from their source. The import script no longer needs a local edit,
-  because it skips RBD when the RBD variables are unset.
+* **Nothing is vendored.** The CRDs, the toolbox, the external cluster manifest and the import
+  script are taken from their source at the pinned version, and the kustomizations only patch them.
+  The import script no longer needs a local edit, because it skips RBD when the RBD variables are
+  unset.
 * **The Rook and Ceph images of the provider come from `registry.osc.live`.** Consumers and the test
   use the upstream registries.
-* **Fixes:** the mgr load balancer now selects the active mgr only; the test service matched no
-  container port and its image could no longer be pulled; the guide referred to a `cluster-prepare`
-  step that did not exist and contained keys of a test cluster.
+* **Fixes:** the test service matched no container port and its image could no longer be pulled;
+  the guide referred to a `cluster-prepare` step that did not exist and contained keys of a test
+  cluster.
