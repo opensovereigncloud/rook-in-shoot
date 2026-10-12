@@ -17,7 +17,8 @@ other Shoots.
 Everything below was run end to end on the OSC dev landscape on 2026-10-12: provider on Kubernetes
 1.34.8, consumer on 1.32.9, all nodes on Garden Linux 2150.4.0 with kernel 6.18.
 
-The earlier version of this guide, for Rook v1.16 and Ceph v19, is on the `main` branch.
+The earlier version of this guide, for Rook v1.16 and Ceph v19, is on the
+[`v1` branch](https://github.com/opensovereigncloud/rook-in-shoot/tree/v1).
 [What changed](#what-changed-since-the-rook-v116-version) is listed at the end.
 
 ## Two ways to use it
